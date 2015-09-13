@@ -69,7 +69,6 @@ class IdeBackend
     severity: String, one of ['error','warning']
   ###
   checkBuffer: (buffer, callback) =>
-    Util.debug "TESTING 123"
     @process.doCheckBuffer buffer, callback if @isActive()
 
   ###
@@ -84,7 +83,7 @@ class IdeBackend
     severity: String, always 'lint'
   ###
   lintBuffer: (buffer, callback) =>
-    @process.doLintBuffer buffer, callback if @isActive()
+    # @process.doLintBuffer buffer, callback if @isActive()
 
   ###
   onBackendActive(callback)

@@ -56,6 +56,7 @@ class StackIdeProcess
 
   handleResponse: (rootDir, data) =>
     #TODO: handle malformed json
+    Util.debug "Handling response: #{data}"
     if data? and data isnt ""
       try
         json = JSON.parse data
@@ -63,9 +64,9 @@ class StackIdeProcess
         contents = json["contents"]
         switch tag
           when "ResponseWelcome" then @_handleResponseWelcome(contents)
-          when "ResponseUpdateSession" then @_handleResponseUpdateSession(contents)
+          when "ResponseUpdateSession" then @_handleResponseUpdateSession(rootDir, contents)
           when "ResponseGetSourceErrors" then @_handleResponseGetSourceErrors(rootDir, contents)
-          else console.debug "Unrecognized stack ide tag #{tag}: #{JSON.stringify(contents)}"
+          else console.warn "Unrecognized stack ide tag #{tag}: #{JSON.stringify(contents)}"
       catch error
         console.error("error parsing stack ide response: #{error}")
 
@@ -73,15 +74,18 @@ class StackIdeProcess
     console.debug("Stack IDE started")
     @emitter.emit "backend-idle"
 
-  _handleResponseUpdateSession: (contents) =>
-    switch contents['tag']
-      when "UpdateStatusProgress" then =>
-        msg = contents['progressParsedMsg']
-        console.debug("Progress: #{msg}")
-        @emitter.emit "backend-active"
-      when "UpdateStatusDone" then =>
-        @emitter.emit "backend-idle"
-      else console.warn("Unrecognized stack ide ResponseUpdateSession: #{JSON.stringify(contents)}")
+  _handleResponseUpdateSession: (rootDir, contents) =>
+      switch contents['tag']
+          when "UpdateStatusProgress" then =>
+              @emitter.emit "backend-active"
+          when "UpdateStatusDone"
+            console.debug("finished updating")
+            @emitter.emit "backend-idle"
+            proc = @processMap.get(rootDir.getPath())
+            if proc?
+              cb = proc['callbackQueues']['ResponseUpdateSession'].pop()
+              cb() if cb?
+          else console.warn("Unrecognized stack ide ResponseUpdateSession: #{contents['tag']}")
 
   _handleResponseGetSourceErrors: (rootDir, contents) =>
       @emitter.emit "backend-idle"
@@ -107,9 +111,9 @@ class StackIdeProcess
             position: new Point(row - 1, col - 1)
             message: msg
             severity: severity
-        cb results
+        cb results if cb?
 
-  runStackIdeCmd: (dir, command, contents, callback) =>
+  runStackIdeCmd: (dir, command, contents, callbacks) =>
     contents = [] unless contents?
     cmd = JSON.stringify({tag: command, contents: contents })
     Util.debug "Trying to run stack-ide command in #{dir.getPath()}: #{cmd}"
@@ -117,6 +121,12 @@ class StackIdeProcess
     unless process
       Util.debug "Failed"
       return
+    queues = @processMap.get(dir.getPath())['callbackQueues']
+    for cbtype, cb of callbacks
+      unless queues[cbtype]?
+        queues[cbtype] = []
+      if cb?
+        queues[cbtype].unshift(cb)
     process.stdin.write "#{cmd}\n"
     @emitter.emit 'queue-idle'
 
@@ -225,24 +235,21 @@ class StackIdeProcess
     dir = Util.getRootDir(buffer)
     @runStackIdeCmd dir, 'RequestGetLoadedModules', []
 
-  doCheckBuffer: (buffer, callback) =>
+  updateSession: (buffer, callback) =>
+    console.debug("requesting updated session")
     dir = Util.getRootDir(buffer)
     @runStackIdeCmd dir, 'RequestUpdateSession',
-      [{"tag": "RequestSessionUpdate", "contents": []}]
-      # [{
-        # tag: 'RequestUpdateTargets'
-        # contents:
-            # tag: "TargetsInclude"
-            # contents: [buffer.getPath()]
-      # }]
-    @runStackIdeCmd dir, "RequestGetSourceErrors", []
-    proc = @processMap.get dir.getPath()
-    if proc?
-      queues = proc['callbackQueues']
-      if queues['ResponseGetSourceErrors']?
-        queues['ResponseGetSourceErrors'].push(callback)
-      else
-        queues['ResponseGetSourceErrors'] = [callback]
+      [{"tag": "RequestSessionUpdate", "contents": []}],
+      { 'ResponseUpdateSession': callback }
+
+
+  doCheckBuffer: (buffer, callback) =>
+    console.debug("requesting checked buffer")
+    dir = Util.getRootDir(buffer)
+    @updateSession buffer, () =>
+      @runStackIdeCmd dir, 'RequestGetSourceErrors', [],
+        { 'ResponseGetSourceErrors': callback }
 
   doLintBuffer: (buffer, callback) =>
+    console.debug("requesting linting")
     @doCheckBuffer buffer, callback
