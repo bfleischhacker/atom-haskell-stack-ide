@@ -26,7 +26,7 @@ class StackIdeProcess
     Util.debug "Spawning new stack-ide instance for #{rootDir.getPath()} with
           #{"options.#{k} = #{v}" for k, v of options}"
     stackPath = atom.config.get('haskell-stack-ide.stackPath')
-    proc = CP.spawn(stackPath, ['ide'], options)
+    proc = CP.spawn(stackPath, ['ide', 'start'], options)
     @processMap.set rootDir.getPath(),
       root: rootDir
       process: proc
@@ -62,11 +62,18 @@ class StackIdeProcess
         json = JSON.parse data
         tag = json["tag"]
         contents = json["contents"]
-        switch tag
-          when "ResponseWelcome" then @_handleResponseWelcome(contents)
-          when "ResponseUpdateSession" then @_handleResponseUpdateSession(rootDir, contents)
-          when "ResponseGetSourceErrors" then @_handleResponseGetSourceErrors(rootDir, contents)
-          else console.warn "Unrecognized stack ide tag #{tag}: #{JSON.stringify(contents)}"
+        proc = @processMap.get(rootDir.getPath())
+        if proc?
+          cbQs = proc['callbackQueues']
+          if cbQs?
+            cbQ = cbQs[tag]
+            if cbQ? and cbQ.length > 0
+              cb = cbQ[0]
+              if cb?
+                if cb contents
+                  cbQ.pop()
+                return
+            console.warn "Unexpected stack ide response tag #{tag}: #{JSON.stringify(contents)}"
       catch error
         console.error("error parsing stack ide response: #{error}")
 
@@ -74,44 +81,41 @@ class StackIdeProcess
     console.debug("Stack IDE started")
     @emitter.emit "backend-idle"
 
-  _handleResponseUpdateSession: (rootDir, contents) =>
+  _handleResponseUpdateSession: (rootDir, contents, cb) =>
       switch contents['tag']
-          when "UpdateStatusProgress" then =>
+          when "UpdateStatusProgress"
               @emitter.emit "backend-active"
           when "UpdateStatusDone"
             console.debug("finished updating")
             @emitter.emit "backend-idle"
-            proc = @processMap.get(rootDir.getPath())
-            if proc?
-              cb = proc['callbackQueues']['ResponseUpdateSession'].pop()
-              cb() if cb?
+            cb() if cb?
+            return true
           else console.warn("Unrecognized stack ide ResponseUpdateSession: #{contents['tag']}")
+      return false
 
-  _handleResponseGetSourceErrors: (rootDir, contents) =>
+  _handleResponseGetSourceErrors: (rootDir, contents, cb) =>
       @emitter.emit "backend-idle"
-      proc = @processMap.get(rootDir.getPath())
-      if proc?
-        cb = proc['callbackQueues']['ResponseGetSourceErrors'].pop()
-        results = []
-        for error in contents
-          row = Number.parseInt(error['errorSpan']['contents']['spanFromLine'])
-          col = Number.parseInt(error['errorSpan']['contents']['spanFromColumn'])
-          path = error['errorSpan']['contents']['spanFilePath']
-          uri = (try rootDir.getFile(rootDir.relativize(path)).getPath()) ? path
-          msg = error['errorMsg']
-          severity = switch error['errorKind'].substring(4).toLowerCase()
-            when 'warning' then 'warning'
-            when 'error' then 'error'
-            else ->
-              Util.debug "Unrecognized errorKind #{error['errorKind']}"
-              'error'
+      results = []
+      for error in contents
+        row = Number.parseInt(error['errorSpan']['contents']['spanFromLine'])
+        col = Number.parseInt(error['errorSpan']['contents']['spanFromColumn'])
+        path = error['errorSpan']['contents']['spanFilePath']
+        uri = (try rootDir.getFile(rootDir.relativize(path)).getPath()) ? path
+        msg = error['errorMsg']
+        severity = switch error['errorKind'].substring(4).toLowerCase()
+          when 'warning' then 'warning'
+          when 'error' then 'error'
+          else
+            Util.debug "Unrecognized errorKind #{error['errorKind']}"
+            'error'
 
-          results.push
-            uri: uri
-            position: new Point(row - 1, col - 1)
-            message: msg
-            severity: severity
-        cb results if cb?
+        results.push
+          uri: uri
+          position: new Point(row - 1, col - 1)
+          message: msg
+          severity: severity
+      cb results if cb?
+      return true
 
   runStackIdeCmd: (dir, command, contents, callbacks) =>
     contents = [] unless contents?
@@ -180,7 +184,26 @@ class StackIdeProcess
   runBrowse: (rootPath, modules, callback) =>
 
   getTypeInBuffer: (buffer, crange, callback) =>
+    # console.debug("looking up type")
     # crange = Util.toRange crange
+    # runStackIdeCmd 'RequestGetExpTypes',
+    #   {
+    #     tag: 'SourceSpan'
+    #     contents:
+    #       spanFilePath:
+    #       spanFromLine:
+    #       spanFromColumn:
+    #       spanToLine:
+    #       spanToColumn:
+    #   },
+    #   { 'ResponseGetExpTypes': (contents) =>
+    #       callback {
+    #
+    #       }
+    #   }
+    #
+
+
     #
     # @queueCmd 'typeinfo',
     #   interactive: true
@@ -240,16 +263,15 @@ class StackIdeProcess
     dir = Util.getRootDir(buffer)
     @runStackIdeCmd dir, 'RequestUpdateSession',
       [{"tag": "RequestSessionUpdate", "contents": []}],
-      { 'ResponseUpdateSession': callback }
-
+      { 'ResponseUpdateSession': (contents) =>
+        return @_handleResponseUpdateSession(dir, contents, callback) }
 
   doCheckBuffer: (buffer, callback) =>
     console.debug("requesting checked buffer")
     dir = Util.getRootDir(buffer)
     @updateSession buffer, () =>
       @runStackIdeCmd dir, 'RequestGetSourceErrors', [],
-        { 'ResponseGetSourceErrors': callback }
+        { 'ResponseGetSourceErrors': (contents) =>
+          return @_handleResponseGetSourceErrors(dir, contents, callback) }
 
   doLintBuffer: (buffer, callback) =>
-    console.debug("requesting linting")
-    @doCheckBuffer buffer, callback

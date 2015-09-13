@@ -83,7 +83,7 @@ class IdeBackend
     severity: String, always 'lint'
   ###
   lintBuffer: (buffer, callback) =>
-    # @process.doLintBuffer buffer, callback if @isActive()
+    @process.doLintBuffer buffer, callback if @isActive()
 
   ###
   onBackendActive(callback)
