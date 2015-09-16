@@ -78,3 +78,9 @@ module.exports = Util =
           callback res.map (line) ->
             line.split(info.path).join(uri)
         func opts
+
+  uuid: (a) =>
+    if a?
+      return (a^Math.random()*16>>a/4).toString(16)
+    else
+      return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, Util.uuid)

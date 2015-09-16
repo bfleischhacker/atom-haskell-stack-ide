@@ -54,8 +54,7 @@ class CompletionBackend
     unless bi?.buffer?
       @bufferMap.set buffer, bi = new BufferInfo(buffer)
       # bi.onDidDestroy =>
-      #   @bufferMap.delete buffer
-    bufferInfo: bi
+      #   @bufferMap.delete buffer bufferInfo: bi
 
   getModuleMap: ({bufferInfo, rootDir}) =>
     unless bufferInfo? or rootDir?
