@@ -139,4 +139,16 @@ class IdeBackend
     module: Module name
   ###
   getModulesExportingSymbolAt: (buffer, range, callback) =>
-  #@process.findSymbolProvidersInBuffer buffer, range, callback
+    @process.findSymbolProvidersInBuffer buffer, range, callback if @isActive()
+
+  ###
+  getSymbolDefinition(buffer, range, callback)
+  get location of the definition for a symbol at a position
+  buffer: TextBuffer with source
+  range: Range or Point, signifying extent of symbol
+  callback: (uri, location) ->
+    uri: Uri of the file containing the definition
+    location: Point in the file of the definition
+  ###
+  getSymbolDefinition: (buffer, range, callback) =>
+    @process.getSymbolDefinition buffer, range, callback if @isActive()

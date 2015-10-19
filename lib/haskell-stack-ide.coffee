@@ -13,7 +13,9 @@ module.exports = HaskellStackIde =
     debug:
       type: 'boolean'
       default: false
-    
+
+  hotkeys: {}
+
   activate: (state) ->
     @process = new StackIdeProcess
 

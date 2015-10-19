@@ -58,6 +58,30 @@ module.exports = Util =
     else
       throw new Error("Unknown point or range class #{pointOrRange}")
 
+  rangeToStackSpan: (range) -> return {
+    spanFromLine: range.start.row + 1
+    spanToLine: range.end.row + 1
+    spanFromColumn: range.start.column + 1
+    spanToColumn: range.end.column + 1
+  }
+
+  stackSpanToRange: (span) ->
+    try
+      startRow = span['spanFromLine'] - 1
+      startCol = span['spanFromColumn'] - 1
+      endRow = span['spanToLine'] - 1
+      endCol = span['spanToColumn'] - 1
+      return new Range [startRow, startCol], [endRow, endCol]
+    catch error
+      return null
+
+  stackSpan: (buffer, range) ->
+    span = Util.rangeToStackSpan(range)
+    root = Util.getRootDir buffer
+    rel = root.relativize(buffer.getPath())
+    span['spanFilePath'] = rel
+    return span
+
   withTempFile: (contents, func, suffix, opts) ->
     Temp.open
       prefix: 'haskell-stack-ide',

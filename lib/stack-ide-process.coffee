@@ -15,6 +15,7 @@ class StackIdeProcess
   }
 
   constructor: ->
+    @buffer = ""
     @processMap = new Map
     @handlers = new Map
     @disposables = new CompositeDisposable
@@ -63,7 +64,14 @@ class StackIdeProcess
 
   handleResponse: (rootDir, data) =>
     try
-      json = JSON.parse data
+      json = null
+      try
+        json = JSON.parse (@buffer + data)
+        @buffer = ""
+      catch error
+        @buffer = @buffer + data
+        return
+
       tag = json["tag"]
       contents = json["contents"]
       seq = json["seq"]
@@ -165,68 +173,68 @@ class StackIdeProcess
     console.debug("looking up type")
     crange = Util.toRange crange
     rootDir = Util.getRootDir(buffer)
-    @runStackIdeCmd rootDir, 'RequestGetExpTypes', {
-      spanFilePath:  rootDir.relativize(buffer.getPath())
-      spanFromLine: crange.start.row + 1
-      spanFromColumn: crange.start.column + 1
-      spanToLine: crange.end.row + 1
-      spanToColumn: crange.end.column + 1
-    },
-    (contents) =>
-      console.debug "Result: #{contents}"
-      range = crange
-      type = undefined
-      for [t, r] in contents
-        startRow = r['spanFromLine'] - 1
-        startCol = r['spanFromColumn'] - 1
-        endRow = r['spanToLine'] - 1
-        endCol = r['spanToColumn'] - 1
-        trange = new Range [startRow, startCol], [endRow, endCol]
-        if trange.containsRange(crange)
-          type = t
-          range = trange
-          break
-      console.debug "Type of range #{range}: #{type}"
-      callback {range, type}
+    relPath = rootDir.relativize(buffer.getPath())
+    contents = Util.rangeToStackSpan crange
+    contents['spanFilePath'] = relPath
+    @runStackIdeCmd rootDir, 'RequestGetExpTypes', contents,
+      (contents) =>
+        range = crange
+        type = undefined
+        for [t, r] in contents
+          trange = Util.stackSpanToRange r
+          if trange? and trange.containsRange(crange)
+            type = t
+            range = trange
+            break
+        console.debug "Type of range #{range}: #{type}"
+        callback {range, type}
 
   getInfoInBuffer: (buffer, crange, callback) =>
-    # crange = Util.toRange crange
-    # {symbol, range} = Util.getSymbolInRange(/[\w.']*/, buffer, crange)
-    #
-    # @queueCmd 'typeinfo',
-    #   interactive: true
-    #   dir: Util.getRootDir(buffer)
-    #   options: Util.getProcessOptions(Util.getRootDir(buffer).getPath())
-    #   command: 'info'
-    #   uri: buffer.getUri()
-    #   text: buffer.getText() if buffer.isModified()
-    #   args: ["", symbol]
-    #   callback: (lines) ->
-    #     text = lines.join('\n')
-    #     text = undefined if text is 'Cannot show info' or not text
-    #     callback {range, info: text}
+    crange = Util.toRange crange
+    console.debug "getSpanInfo for #{buffer.getPath()}"
+    rootDir = Util.getRootDir(buffer)
+    contents = Util.stackSpan(buffer, crange)
+    @runStackIdeCmd rootDir, 'RequestGetSpanInfo', contents,
+      (contents) =>
+        range = crange
+        info = undefined
+        for [i, span] in contents
+          r = Util.stackSpanToRange span
+          if r? and r.containsRange(crange)
+            moduleName = i.contents?.idProp?.idDefinedIn?.moduleName || ''
+            name = i.contents?.idProp?.idName || ''
+            fullName = "#{moduleName}.#{name}"
+            typeSignature = i.contents?.idProp?.idType || ''
+            localDefintionFile = info?.contents?.idProp?.idDefSpan?.contents?.spanFilePath
+            if localDefintionFile?
+              localDefintionSpan = info?.contents?.idProp?.idDefSpan?.contents?.spanFromLine?.toString() || ''
+              importedFrom = "line #{localDefintionLineNum}: #{localDefintionFile}"
+            else
+              importedModule = i.contents?.idScope?.idImportedFrom?.moduleName || ''
+              importedPackage = i.contents?.idScope?.idImportedFrom?.modulePackage?.packageName || ''
+              importedFrom = "#{importedModule} - #{importedPackage}"
+            info = "#{name} :: #{typeSignature}\n#{importedFrom}"
+            range = r
+            break
+        callback {range, info}
 
   findSymbolProvidersInBuffer: (buffer, crange, callback) =>
-    # crange = Util.toRange crange
-    # {symbol} = Util.getSymbolInRange(/[\w']*/, buffer, crange)
-    #
-    # @queueCmd 'find',
-    #   options: Util.getProcessOptions(Util.getRootDir(buffer).getPath())
-    #   command: 'find'
-    #   args: [symbol]
-    #   callback: callback
-
-  getSpanInfo: (buffer, crange, callback) =>
-    # console.debug "getSpanInfo for #{buffer.getPath()}"
-    # rootDir = Util.getRootDir(buffer)
-    # @runStackIdeCmd rootDir, 'RequestGetSpanInfo',
-    #   spanFilePath: buffer.getPath()
-    #   spanFromLine: crange.start.row
-    #   spanFromColumn: crange.start.column
-    #   spanToLine: crange.end.row
-    #   spanToColumn: crange.end.column,
-    #
-    #   (contents) => console.debug("SpanInfo #{JSON.stringify(contents)}")
+    crange = Util.toRange crange
+    console.debug "getSpanInfo for #{buffer.getPath()}"
+    rootDir = Util.getRootDir(buffer)
+    contents = Util.stackSpan(buffer, crange)
+    @runStackIdeCmd rootDir, 'RequestGetSpanInfo', contents,
+      (contents) =>
+        providers = []
+        for [i, span] in contents
+          r = Util.stackSpanToRange span
+          if r? and r.containsRange(crange)
+            isWiredIn = i?.contents?.idScope?.tag is 'WiredIn'
+            if isWiredIn? and isWiredIn isnt true
+              module = i?.contents?.idProp?.idDefinedIn?.moduleName
+              providers.push(module) if module?
+        console.debug "Providers for #{buffer.getTextInRange crange}: #{providers}"
+        callback providers
 
   getLoadedModules: (buffer) =>
     dir = Util.getRootDir(buffer)
@@ -280,3 +288,26 @@ class StackIdeProcess
           return true
 
   doLintBuffer: (buffer, callback) =>
+
+  getSymbolDefinition: (buffer, crange, callback) =>
+    console.debug "get local definition for #{crange} in #{buffer.getPath()}"
+    @getSpanInfo buffer, crange, (span, info) =>
+      localDefintionFile = info?.contents?.idProp?.idDefSpan?.contents?.spanFilePath
+      localDefintionSpan = info?.contents?.idProp?.idDefSpan?.contents
+      localDefintionRange = Util.stackSpanToRange(localDefintionSpan) if localDefintionSpan?
+      if localDefintionFile? and localDefintionRange?
+        console.debug "#{crange} is defined at #{localDefintionRange.start}: #{localDefintionFile}"
+        callback localDefintionFile, localDefintionRange.start
+
+  getSpanInfo: (buffer, crange, callback) =>
+    crange = Util.toRange crange
+    rootDir = Util.getRootDir(buffer)
+    contents = Util.stackSpan(buffer, crange)
+    @runStackIdeCmd rootDir, 'RequestGetSpanInfo', contents,
+      (contents) =>
+        range = crange
+        info = undefined
+        for [i, span] in contents
+          r = Util.stackSpanToRange span
+          if r? and r.containsRange crange
+            callback span, i
